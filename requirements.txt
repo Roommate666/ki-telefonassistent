@@ -1,0 +1,17 @@
+# KI-Telefonassistent - Python Dependencies
+# Installation: pip install -r requirements.txt
+
+# Web-Dashboard
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Konfiguration
+python-dotenv>=1.0.0
+
+# HTTP-Requests (fuer LLM APIs + Telegram)
+requests>=2.31.0
+
+# Speech-to-Text
+faster-whisper>=1.0.0
+
+# Datenbank (SQLite ist in Python eingebaut, kein Package noetig)
