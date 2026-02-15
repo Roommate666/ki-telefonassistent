@@ -9,6 +9,7 @@ import json
 import time
 import queue
 import threading
+from datetime import timedelta
 from flask import Flask, render_template_string, jsonify, request, Response
 from flask_cors import CORS
 from src.call_database import (
@@ -20,6 +21,12 @@ from src.booking_api import booking_api
 from src.booking_dashboard import booking_dashboard
 from src.customer_api import customer_api
 from src.customer_portal import customer_portal
+from src.versicherung_app import versicherung_app
+from src.versicherung_api import versicherung_api
+from src.push_notifications import init_push_tables
+from src.auth import auth_bp
+from src.universal_dashboard import universal_dashboard
+from src.universal_api import universal_api
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +35,13 @@ app = Flask(__name__)
 config = load_config()
 app.secret_key = config["web_secret_key"]
 
+# Session-Konfiguration fuer Login-System
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
 # CORS fuer Booking-API und Kunden-API
-CORS(app, resources={r"/api/booking/*": {"origins": "*"}, r"/api/kunde/*": {"origins": "*"}})
+CORS(app, resources={r"/api/booking/*": {"origins": "*"}, r"/api/kunde/*": {"origins": "*"}, r"/api/v/*": {"origins": "*"}, r"/api/d/*": {"origins": "*"}})
 
 # --- Server-Sent Events fuer Echtzeit-Updates ---
 sse_clients = []
@@ -102,6 +114,15 @@ app.register_blueprint(booking_dashboard)
 # Kunden-Portal registrieren
 app.register_blueprint(customer_api)
 app.register_blueprint(customer_portal)
+
+# Versicherungsberater-Dashboard registrieren (Legacy, bleibt fuer Rueckwaerts-Kompatibilitaet)
+app.register_blueprint(versicherung_app)
+app.register_blueprint(versicherung_api)
+
+# Universelles Login + Dashboard (neu)
+app.register_blueprint(auth_bp)
+app.register_blueprint(universal_dashboard)
+app.register_blueprint(universal_api)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -540,6 +561,7 @@ def api_sse():
 if __name__ == "__main__":
     init_database()
     init_booking_tables()
+    init_push_tables()
 
     if ADMIN_PASSWORD:
         logger.info("Admin-Dashboard mit Passwort-Schutz gestartet")

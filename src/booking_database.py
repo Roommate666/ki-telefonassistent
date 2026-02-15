@@ -9,6 +9,7 @@ import secrets
 import logging
 from datetime import datetime
 from pathlib import Path
+from werkzeug.security import generate_password_hash, check_password_hash
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,20 @@ def init_booking_tables():
         CREATE INDEX IF NOT EXISTS idx_businesses_token ON businesses(access_token);
         CREATE INDEX IF NOT EXISTS idx_customer_tokens_token ON customer_tokens(access_token);
         CREATE INDEX IF NOT EXISTS idx_customer_tokens_business_phone ON customer_tokens(business_id, customer_phone);
+
+        -- Users (Login fuer Business-Inhaber)
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'owner',
+            is_active BOOLEAN DEFAULT 1,
+            last_login DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
     """)
 
     conn.commit()
@@ -857,3 +872,73 @@ def customer_request_reschedule(apt_id, business_id, customer_phone, new_date, n
     conn.close()
     logger.info(f"Aenderungswunsch fuer Termin {apt_id} gespeichert")
     return True
+
+
+# ============================================================
+# Users (Login-System)
+# ============================================================
+
+def create_user(business_id, username, password):
+    """Erstellt einen neuen User mit gehashtem Passwort."""
+    pw_hash = generate_password_hash(password)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO users (business_id, username, password_hash)
+               VALUES (?, ?, ?)""",
+            (business_id, username, pw_hash),
+        )
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        logger.info(f"User erstellt: {username} (ID: {user_id}, Business: {business_id})")
+        return user_id
+    except sqlite3.IntegrityError:
+        conn.close()
+        logger.warning(f"Username bereits vergeben: {username}")
+        return None
+
+
+def get_user_by_username(username):
+    """Findet einen User anhand des Benutzernamens."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def verify_user_password(username, password):
+    """Prueft Benutzername + Passwort. Gibt User-Dict oder None zurueck."""
+    user = get_user_by_username(username)
+    if not user:
+        return None
+    if check_password_hash(user["password_hash"], password):
+        return user
+    return None
+
+
+def update_last_login(user_id):
+    """Setzt den last_login Timestamp."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET last_login = ? WHERE id = ?",
+        (datetime.now().isoformat(), user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_user_password(user_id, new_password):
+    """Aendert das Passwort eines Users."""
+    pw_hash = generate_password_hash(new_password)
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (pw_hash, user_id),
+    )
+    conn.commit()
+    conn.close()
+    logger.info(f"Passwort geaendert fuer User {user_id}")
