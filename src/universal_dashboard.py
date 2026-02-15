@@ -414,6 +414,23 @@ DASHBOARD_HTML = """
             background: rgba(34,197,94,0.15); color: var(--green);
             border: 1px solid rgba(34,197,94,0.2);
         }
+        .btn-call {
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            color: white; border: none; border-radius: 12px; cursor: pointer;
+            font-weight: 600; transition: all 0.2s ease;
+            box-shadow: 0 2px 8px rgba(34,197,94,0.3);
+        }
+        .btn-call:hover { box-shadow: 0 4px 16px rgba(34,197,94,0.5); transform: translateY(-1px); }
+        .btn-call:active { transform: scale(0.97); }
+        .btn-call-big {
+            padding: 10px 20px; font-size: 0.85rem; border-radius: 12px; width: 100%; margin-bottom: 12px;
+        }
+        .btn-call-small {
+            width: 34px; height: 34px; border-radius: 10px; padding: 0; flex-shrink: 0;
+        }
+        .card-name-row { display: flex; align-items: center; gap: 8px; }
+        .card-name-row .name { flex: 1; min-width: 0; }
 
         .search-bar { position: relative; margin-bottom: 12px; }
         .search-bar input {
@@ -677,6 +694,10 @@ DASHBOARD_HTML = """
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
                 <span id="modal-phone-text">-</span>
             </a>
+            <a href="#" class="btn-call btn-call-big" id="modal-call-btn" style="display:none;text-decoration:none;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+                Jetzt anrufen
+            </a>
             <div class="modal-meta" id="modal-meta"></div>
             <div class="anliegen-box" id="modal-anliegen">-</div>
             <div class="modal-actions" id="modal-actions"></div>
@@ -831,10 +852,18 @@ DASHBOARD_HTML = """
             quickBtn = '<button class="btn-quick btn-action" onclick="event.stopPropagation();quickCallback(' + a.id + ',this)">Erledigt</button>';
         }
 
+        var tel = a.telefon || '';
+        var callIcon = '';
+        if (tel && tel !== 'Unbekannt' && tel !== '-') {
+            callIcon = '<a href="tel:' + esc(tel) + '" class="btn-call btn-call-small" onclick="event.stopPropagation()" title="Anrufen">' +
+                '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg></a>';
+        }
+
         return '<div class="call-card' + animClass + '" style="border-left:4px solid ' + cat.color + '" onclick="openDetail(' + a.id + ')">' +
-            '<div class="card-top"><div>' +
-            '<div class="name">' + esc(a.name) + '</div>' +
-            '<div class="phone">' + esc(a.telefon) + '</div>' +
+            '<div class="card-top"><div class="card-name-row">' +
+            '<div><div class="name">' + esc(a.name) + '</div>' +
+            '<div class="phone">' + esc(tel) + '</div></div>' +
+            callIcon +
             '</div><div>' + urgBadge + typBadge + phoneBadge + statusBadge + '</div></div>' +
             '<div class="anliegen">' + esc(a.anliegen) + '</div>' +
             '<div class="card-bottom">' +
@@ -914,6 +943,13 @@ DASHBOARD_HTML = """
         var phone = d.telefon || d.customer_phone || '';
         document.getElementById('modal-phone-text').textContent = phone;
         document.getElementById('modal-phone').href = 'tel:' + phone;
+        var callBtn = document.getElementById('modal-call-btn');
+        if (phone && phone !== 'Unbekannt' && phone !== '-') {
+            callBtn.href = 'tel:' + phone;
+            callBtn.style.display = 'inline-flex';
+        } else {
+            callBtn.style.display = 'none';
+        }
         document.getElementById('modal-anliegen').textContent = d.anliegen || d.description || 'Kein Anliegen erfasst';
         document.getElementById('modal-notiz').value = d.business_notes || '';
 
