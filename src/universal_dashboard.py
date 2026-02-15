@@ -926,13 +926,13 @@ DASHBOARD_HTML = """
         var st = d.status || 'neu';
         var actions = '';
         if (st === 'neu' || st === 'in_bearbeitung') {
-            actions += '<button class="btn-quick btn-action" onclick="setStatus(' + id + ',\'zurueckgerufen\')">Zurueckgerufen</button>';
-            actions += '<button class="btn-quick btn-call-action" onclick="setStatus(' + id + ',\'termin_eingetragen\')">Termin eingetragen</button>';
-            actions += '<button class="btn-quick btn-done" onclick="setStatus(' + id + ',\'erledigt\')">Erledigt</button>';
+            actions += '<button class="btn-quick btn-action" onclick="setStatus(' + id + ',\\'zurueckgerufen\\')">Zurueckgerufen</button>';
+            actions += '<button class="btn-quick btn-call-action" onclick="setStatus(' + id + ',\\'termin_eingetragen\\')">Termin eingetragen</button>';
+            actions += '<button class="btn-quick btn-done" onclick="setStatus(' + id + ',\\'erledigt\\')">Erledigt</button>';
         } else {
             actions += '<span class="badge badge-erledigt" style="padding:8px 16px;font-size:0.8rem;">' + statusText(st) + '</span>';
             if (st !== 'neu') {
-                actions += '<button class="btn-quick btn-outline" onclick="setStatus(' + id + ',\'neu\')">Wieder oeffnen</button>';
+                actions += '<button class="btn-quick btn-outline" onclick="setStatus(' + id + ',\\'neu\\')">Wieder oeffnen</button>';
             }
         }
         document.getElementById('modal-actions').innerHTML = actions;
@@ -1112,7 +1112,9 @@ DASHBOARD_HTML = """
     }
 
     // ===== GO =====
-    init();
+    console.log('BIZ_CONFIG:', BIZ_CONFIG);
+    console.log('API base:', API);
+    init().then(function() { console.log('init done'); }).catch(function(e) { console.error('init FAILED:', e); });
     </script>
 </body>
 </html>
