@@ -18,17 +18,21 @@ FALLBACK_RESPONSE = (
     "Ihren Namen und Ihre Telefonnummer."
 )
 
-EXTRACTION_PROMPT = """Extrahiere folgende Informationen aus dem Gespräch (falls vorhanden).
-Antworte NUR im JSON-Format:
+EXTRACTION_PROMPT = """Extrahiere folgende Informationen aus dem Telefongespraech.
+Antworte NUR mit einem JSON-Objekt, KEIN zusaetzlicher Text davor oder danach:
 {
     "name": "Name des Anrufers oder null",
     "phone": "Telefonnummer oder null",
-    "concern": "Kurze Zusammenfassung des Anliegens",
-    "appointment_requested": true/false,
-    "preferred_time": "Gewünschter Termin oder null",
-    "urgency": "niedrig/mittel/hoch",
-    "callback_requested": true/false
-}"""
+    "concern": "Kurze Zusammenfassung des Anliegens in 1-2 Saetzen",
+    "appointment_requested": true oder false,
+    "preferred_time": "Gewuenschter Termin oder null",
+    "urgency": "niedrig oder mittel oder hoch",
+    "callback_requested": true oder false
+}
+Regeln:
+- concern soll IMMER ausgefuellt sein (mindestens "Allgemeine Anfrage")
+- Wenn der Anrufer seinen Namen genannt hat, trage ihn bei name ein
+- urgency "hoch" nur bei Notfaellen oder dringenden Fristensachen"""
 
 BOOKING_EXTRACTION_PROMPT = """Analysiere dieses Telefongespraech und extrahiere ALLE relevanten Informationen fuer die Terminverwaltung.
 Antworte NUR im JSON-Format, OHNE zusaetzlichen Text:
@@ -62,7 +66,7 @@ Regeln:
 def create_llm_engine(config):
     """
     Factory-Funktion: Erstellt die richtige LLM-Engine basierend auf der Konfiguration.
-    Bei 'groq' wird automatisch ein Fallback zu Gemini eingerichtet.
+    Baut automatisch eine Fallback-Kette auf wenn weitere API-Keys vorhanden sind.
     """
     provider = config.get("llm_provider", "groq").lower()
 
@@ -83,12 +87,49 @@ def create_llm_engine(config):
 
     logger.info(f"LLM-Provider: {provider}")
 
-    # Bei Groq: Automatisch Fallback zu Gemini einrichten (falls Gemini-Key vorhanden)
-    if provider == "groq" and config.get("gemini_api_key"):
-        logger.info("Fallback-LLM aktiviert: Gemini (bei Groq Rate-Limit)")
-        return FallbackEngine(config)
+    # Primary Engine erstellen
+    primary = engine_class(config)
 
-    return engine_class(config)
+    # Fallback-Kette aufbauen (je nach Primary-Provider)
+    fallback_specs = []
+
+    if provider == "anthropic":
+        # Claude → Groq → Gemini
+        if config.get("groq_api_key"):
+            fallback_specs.append(("groq", lambda: GroqEngine(config)))
+        if config.get("gemini_api_key"):
+            fallback_specs.append(("gemini", lambda: GeminiEngine(config)))
+
+    elif provider == "groq":
+        # Groq → Groq-small → Gemini → Claude
+        groq_model = config.get("groq_model", "")
+        if groq_model != "llama-3.1-8b-instant":
+            small_cfg = dict(config)
+            small_cfg["groq_model"] = "llama-3.1-8b-instant"
+            fallback_specs.append(("groq_small", lambda c=small_cfg: GroqEngine(c)))
+        if config.get("gemini_api_key"):
+            fallback_specs.append(("gemini", lambda: GeminiEngine(config)))
+        if config.get("anthropic_api_key"):
+            fallback_specs.append(("anthropic", lambda: AnthropicEngine(config)))
+
+    elif provider == "openai":
+        # OpenAI → Groq → Gemini
+        if config.get("groq_api_key"):
+            fallback_specs.append(("groq", lambda: GroqEngine(config)))
+        if config.get("gemini_api_key"):
+            fallback_specs.append(("gemini", lambda: GeminiEngine(config)))
+
+    elif provider == "gemini":
+        # Gemini → Groq → Claude
+        if config.get("groq_api_key"):
+            fallback_specs.append(("groq", lambda: GroqEngine(config)))
+        if config.get("anthropic_api_key"):
+            fallback_specs.append(("anthropic", lambda: AnthropicEngine(config)))
+
+    if fallback_specs:
+        return FallbackEngine(config, primary, fallback_specs)
+
+    return primary
 
 
 class BaseLLMEngine:
@@ -170,93 +211,71 @@ class BaseLLMEngine:
 
 
 # ============================================================
-# FALLBACK ENGINE - Automatischer Wechsel bei Rate-Limit
+# FALLBACK ENGINE - Automatischer Wechsel bei Fehler
 # ============================================================
 class FallbackEngine(BaseLLMEngine):
     """
-    Wrapper-Engine die bei Fehlern automatisch auf einen Fallback-Provider wechselt.
-    Primaer: Groq mit konfiguriertem Modell (z.B. llama-3.3-70b-versatile)
-    Fallback 1: Groq mit kleinerem Modell (llama-3.1-8b-instant) - hoeheres Rate-Limit
-    Fallback 2: Gemini (falls verfuegbar)
+    Generische Wrapper-Engine die bei Fehlern automatisch auf
+    Fallback-Provider wechselt. Unterstuetzt beliebige Kombinationen.
+    Fallbacks werden lazy initialisiert (erst bei Bedarf).
     """
 
-    def __init__(self, config):
+    def __init__(self, config, primary, fallback_specs):
+        """
+        Args:
+            config: Full config dict
+            primary: Already initialized primary engine
+            fallback_specs: List of (name, factory_fn) tuples for lazy init
+        """
         self.config = config
-        self.primary = GroqEngine(config)
-        self.fallback_groq = None
-        self.fallback_gemini = None
-        self.model = self.primary.model
+        self.primary = primary
+        self.model = primary.model
+        self._fallback_specs = fallback_specs
+        self._fallback_engines = {}
 
-        # Fallback-Modelle
-        self._groq_fallback_model = "llama-3.1-8b-instant"  # Kleineres Modell = hoeheres Rate-Limit
-        self._gemini_available = bool(config.get("gemini_api_key"))
+        fallback_names = ", ".join(name for name, _ in fallback_specs)
+        logger.info(f"FallbackEngine: Primary={primary.model}, "
+                    f"Fallbacks=[{fallback_names}]")
 
-        logger.info(f"FallbackEngine: Primary=Groq ({self.primary.model}), "
-                    f"Fallback1=Groq ({self._groq_fallback_model}), "
-                    f"Fallback2={'Gemini' if self._gemini_available else 'None'}")
-
-    def _get_groq_fallback(self):
-        """Erstellt eine Groq-Engine mit kleinerem Modell."""
-        if self.fallback_groq is None:
+    def _get_fallback(self, name, factory):
+        """Lazy-Initialisierung eines Fallback-Providers."""
+        if name not in self._fallback_engines:
             try:
-                fallback_config = dict(self.config)
-                fallback_config["groq_model"] = self._groq_fallback_model
-                self.fallback_groq = GroqEngine(fallback_config)
-                logger.info(f"Groq-Fallback initialisiert: {self._groq_fallback_model}")
+                self._fallback_engines[name] = factory()
+                logger.info(f"Fallback '{name}' initialisiert")
             except Exception as e:
-                logger.error(f"Groq-Fallback konnte nicht initialisiert werden: {e}")
-        return self.fallback_groq
-
-    def _get_gemini_fallback(self):
-        """Lazy-Initialisierung des Gemini-Fallbacks."""
-        if self.fallback_gemini is None and self._gemini_available:
-            try:
-                self.fallback_gemini = GeminiEngine(self.config)
-                logger.info("Gemini-Fallback initialisiert")
-            except Exception as e:
-                logger.error(f"Gemini-Fallback konnte nicht initialisiert werden: {e}")
-                self._gemini_available = False
-        return self.fallback_gemini
+                logger.error(f"Fallback '{name}' konnte nicht initialisiert werden: {e}")
+                self._fallback_engines[name] = None
+        return self._fallback_engines[name]
 
     def generate_response(self, system_prompt, conversation_history, user_message, max_tokens=None):
-        # Versuche zuerst Primary (Groq mit grossem Modell)
+        # Versuche Primary
         result = self.primary.generate_response(
             system_prompt, conversation_history, user_message, max_tokens
         )
 
-        # Bei Fehler (Rate-Limit, Timeout, etc.): Fallbacks versuchen
-        if result.get("error"):
-            error_msg = result.get("error", "")
-            logger.warning(f"Primary LLM (Groq {self.primary.model}) fehlgeschlagen: {error_msg}")
+        if not result.get("error"):
+            return result
 
-            # Rate-Limit -> Fallbacks versuchen
-            if "429" in error_msg or "rate" in error_msg.lower() or "timeout" in error_msg.lower():
+        error_msg = result.get("error", "")
+        logger.warning(f"Primary LLM ({self.primary.model}) fehlgeschlagen: {error_msg}")
 
-                # Fallback 1: Groq mit kleinerem Modell (hoeheres Rate-Limit)
-                groq_fallback = self._get_groq_fallback()
-                if groq_fallback:
-                    logger.info(f"Wechsle zu Groq-Fallback ({self._groq_fallback_model})...")
-                    fallback_result = groq_fallback.generate_response(
-                        system_prompt, conversation_history, user_message, max_tokens
-                    )
-                    if not fallback_result.get("error"):
-                        fallback_result["fallback_used"] = "groq_small"
-                        self.model = groq_fallback.model
-                        return fallback_result
-                    logger.warning(f"Groq-Fallback auch fehlgeschlagen: {fallback_result.get('error')}")
+        # Bei Fehler: Fallbacks der Reihe nach versuchen
+        for name, factory in self._fallback_specs:
+            engine = self._get_fallback(name, factory)
+            if engine is None:
+                continue
 
-                # Fallback 2: Gemini
-                gemini_fallback = self._get_gemini_fallback()
-                if gemini_fallback:
-                    logger.info("Wechsle zu Gemini-Fallback...")
-                    fallback_result = gemini_fallback.generate_response(
-                        system_prompt, conversation_history, user_message, max_tokens
-                    )
-                    if not fallback_result.get("error"):
-                        fallback_result["fallback_used"] = "gemini"
-                        self.model = gemini_fallback.model
-                        return fallback_result
-                    logger.error(f"Gemini-Fallback auch fehlgeschlagen: {fallback_result.get('error')}")
+            logger.info(f"Wechsle zu Fallback: {name}...")
+            fallback_result = engine.generate_response(
+                system_prompt, conversation_history, user_message, max_tokens
+            )
+            if not fallback_result.get("error"):
+                fallback_result["fallback_used"] = name
+                self.model = engine.model
+                return fallback_result
+            logger.warning(f"Fallback '{name}' auch fehlgeschlagen: "
+                          f"{fallback_result.get('error')}")
 
         return result
 
@@ -495,7 +514,7 @@ class AnthropicEngine(BaseLLMEngine):
 
     def __init__(self, config):
         self.api_key = config.get("anthropic_api_key", "")
-        self.model = config.get("anthropic_model", "claude-haiku-4-20250414")
+        self.model = config.get("anthropic_model", "claude-haiku-4-5-20251001")
         self.api_url = "https://api.anthropic.com/v1/messages"
 
         if not self.api_key:

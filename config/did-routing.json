@@ -1,0 +1,13 @@
+{
+  "default": "handwerk",
+  "routes": {
+    "+4982112345678": {
+      "business": "handwerk",
+      "telegram_chat_id": "6859301779"
+    },
+    "+49XXXXXXXXXX": {
+      "business": "versicherung",
+      "telegram_chat_id": "[CHAT_ID_DES_BERATERS]"
+    }
+  }
+}

@@ -48,7 +48,7 @@ def load_config():
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
         # Anthropic
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
-        "anthropic_model": os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-20250414"),
+        "anthropic_model": os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
         # Ollama (lokal)
         "ollama_host": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         "ollama_model": os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
@@ -95,6 +95,43 @@ def load_config():
     }
 
 
+def load_business_by_did(did_number):
+    """
+    Laedt die Business-Konfiguration anhand der angerufenen Nummer (DID).
+    Gibt ein Tuple zurueck: (business_config, route_info)
+    route_info enthaelt z.B. telegram_chat_id fuer die Route.
+    """
+    routing_file = CONFIG_DIR / "did-routing.json"
+    if routing_file.exists():
+        with open(routing_file, "r", encoding="utf-8") as f:
+            routing = json.load(f)
+
+        # Normalisiere: +49821... oder 0821... oder nur die letzten Ziffern
+        for pattern, route in routing.get("routes", {}).items():
+            if did_number.endswith(pattern[-8:]) or pattern.endswith(did_number[-8:]):
+                # Route kann ein String (alter Format) oder ein Dict (neues Format) sein
+                if isinstance(route, str):
+                    business_name = route
+                    route_info = {}
+                else:
+                    business_name = route.get("business", routing.get("default", "handwerk"))
+                    route_info = route
+                logger.info(f"DID-Routing: {did_number} -> {business_name}")
+                return load_business_config(business_name), route_info
+
+        # Keine Route gefunden -> Default
+        default_business = routing.get("default", "handwerk")
+        default_route_info = {}
+        if routing.get("default_booking_business_id"):
+            default_route_info["booking_business_id"] = routing["default_booking_business_id"]
+        logger.info(f"DID-Routing: {did_number} -> Default ({default_business})")
+        return load_business_config(default_business), default_route_info
+
+    # Keine Routing-Datei -> Fallback auf ACTIVE_BUSINESS
+    logger.warning("did-routing.json nicht gefunden, nutze ACTIVE_BUSINESS Fallback")
+    return load_business_config(), {}
+
+
 def load_business_config(business_name=None):
     """
     Lädt die Branchen-Konfiguration.
@@ -128,18 +165,18 @@ def list_available_businesses():
 def build_system_prompt(business_config):
     """
     Baut den System-Prompt aus der Branchen-Konfiguration zusammen.
+    Adaptiv: Nutzt die custom_instructions jeder Branche fuer den spezifischen Ablauf.
     """
     biz = business_config
 
-    prompt = f"""Du bist ein freundlicher und professioneller KI-Telefonassistent für folgendes Unternehmen:
+    prompt = f"""Du bist ein freundlicher KI-Telefonassistent fuer:
 
 UNTERNEHMEN: {biz.get('company_name', 'Firma')}
 BRANCHE: {biz.get('industry', 'Allgemein')}
-ADRESSE: {biz.get('address', 'Nicht angegeben')}
-TELEFON: {biz.get('phone', 'Nicht angegeben')}
-EMAIL: {biz.get('email', 'Nicht angegeben')}
+ADRESSE: {biz.get('address', '')}
+TELEFON: {biz.get('phone', '')}
 
-ÖFFNUNGSZEITEN:
+OEFFNUNGSZEITEN:
 {_format_hours(biz.get('opening_hours', {}))}
 
 DIENSTLEISTUNGEN:
@@ -151,63 +188,23 @@ WICHTIGE INFORMATIONEN:
 VERHALTENSREGELN:
 {_format_list(biz.get('behavior_rules', []))}
 
-HÄUFIGE FRAGEN UND ANTWORTEN:
+HAEUFIGE FRAGEN:
 {_format_faq(biz.get('faq', []))}
 
-KERNREGEL - ANTWORTLAENGE:
-Deine Antworten werden am Telefon vorgelesen. Sei EXTREM kurz!
-MAXIMAL 1 kurzer Satz. Nie mehr als 12 Woerter.
-Antworte NUR auf Deutsch. Keine Floskeln, keine Emojis.
-
-GESPRAECHSABLAUF - Strikt befolgen:
-
-Schritt 1: Anliegen verstehen
-- Hoere zu was der Anrufer will
-- Wenn unklar, frage kurz nach: "Was genau ist das Problem?"
-
-Schritt 2: Name erfragen
-- "Wie ist Ihr Name bitte?"
-- WARTE auf Antwort, dann BESTAETIGEN: "Herr [Name], richtig?"
-- Wenn falsch, nochmal fragen
-
-Schritt 3: Adresse erfragen
-- "Wie ist Ihre Adresse?"
-- WARTE auf Antwort
-- Das System validiert die Adresse automatisch mit einer Datenbank
-- Wenn im Kontext [SYSTEM: Die genannte Adresse wurde validiert als: X] steht, nutze DIESE Adresse
-- BESTAETIGEN: "Also [validierte Adresse], korrekt?"
-- Wenn falsch, nochmal fragen
-
-Schritt 4: Termin erfragen
-- "Wann passt es Ihnen?"
-- WARTE auf Antwort
-
-Schritt 5: Alles zusammenfassen
-- Wiederhole ALLES: "[Name], [Adresse], [Problem], [Termin]. Stimmt das?"
-- WARTE auf "Ja" vom Anrufer
-
-Schritt 6: Extra-Wuensche erfragen
-- "Moechten Sie noch etwas hinzufuegen?"
-- WARTE auf Antwort
-- Wenn ja: notieren und kurz bestaetigen
-- Wenn nein oder "das wars": weiter zu Schritt 7
-
-Schritt 7: Abschliessen
-- "Alles klar, ist notiert. Wir melden uns bei Ihnen. Schoenen Tag noch!"
-
-ABSOLUTE REGELN:
-- IMMER nur EINE Frage pro Antwort
-- IMMER Daten bestaetigen bevor du weitergehst
-- NIEMALS zwei Fragen kombinieren
-- NIEMALS erfundene Daten annehmen
-- NIEMALS verwirrendes Zeug sagen
+ANTWORT-REGELN (Deine Antworten werden am Telefon vorgelesen!):
+- Antworte IMMER auf Deutsch
+- Maximal 2 kurze Saetze pro Antwort
+- Stelle immer nur EINE Frage auf einmal
+- Keine Emojis, keine Aufzaehlungen, keine Sonderzeichen
+- Bestatige wichtige Infos (Name, Termin) durch Wiederholen
 - Wenn du etwas nicht verstehst: "Koennten Sie das bitte wiederholen?"
-- Telefonnummer NICHT erfragen (haben wir schon)
+- Telefonnummer NICHT erfragen (kommt automatisch)
+- Sei natuerlich und warmherzig, nicht roboterhaft
+- Erfinde NIEMALS Informationen die du nicht hast
 """
 
-    # Branchenspezifische Zusatz-Anweisungen
     if "custom_instructions" in biz:
-        prompt += f"\nZUSÄTZLICHE ANWEISUNGEN:\n{biz['custom_instructions']}\n"
+        prompt += f"\nSPEZIFISCHE ANWEISUNGEN:\n{biz['custom_instructions']}\n"
 
     return prompt
 

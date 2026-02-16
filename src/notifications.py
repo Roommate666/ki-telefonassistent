@@ -36,20 +36,24 @@ class NotificationManager:
                 "Anruf-Infos sind nur im Dashboard sichtbar."
             )
 
-    def notify_new_call(self, caller_info, call_data):
+    def notify_new_call(self, caller_info, call_data, telegram_chat_id=None):
         """
         Benachrichtigt über einen neuen Anruf.
 
         Args:
             caller_info: Dict mit name, phone, concern, urgency, etc.
             call_data: Dict mit call_id, caller_number, duration, etc.
+            telegram_chat_id: Optionaler Override fuer die Telegram Chat-ID (Multi-Tenant).
         """
         message = self._format_message(caller_info, call_data)
         subject = self._format_subject(caller_info)
 
         for channel in self.channels:
             try:
-                channel.send(subject, message)
+                if telegram_chat_id and isinstance(channel, TelegramNotifier):
+                    channel.send(subject, message, chat_id_override=telegram_chat_id)
+                else:
+                    channel.send(subject, message)
             except Exception as e:
                 logger.error(f"Benachrichtigung fehlgeschlagen ({channel.name}): {e}")
 
@@ -75,6 +79,9 @@ class NotificationManager:
         appointment = "JA" if caller_info.get("appointment_requested") else "Nein"
         preferred_time = caller_info.get("preferred_time") or "-"
         duration = call_data.get("duration_seconds", 0)
+        address = call_data.get("customer_address") or "-"
+        service = call_data.get("service_name") or "-"
+        category = call_data.get("category") or ""
 
         urgency_text = {
             "hoch": "🔴 HOCH - Bitte schnell reagieren!",
@@ -90,6 +97,8 @@ class NotificationManager:
 👤 Name:           {name}
 📞 Telefon:        {phone}
 📋 Anliegen:       {concern}
+📍 Adresse:        {address}
+🔧 Leistung:       {service}
 ⚡ Dringlichkeit:  {urgency_text}
 📞 Rückruf:        {callback}
 📅 Termin:         {appointment}
@@ -98,6 +107,9 @@ class NotificationManager:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+
+        if category:
+            message = message.rstrip() + f"\n🏷️ Kategorie:      {category}\n"
 
         if caller_info.get("callback_requested"):
             message += f"""
@@ -198,16 +210,22 @@ class TelegramNotifier:
         ]
         self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
 
-    def send(self, subject, message):
+    def send(self, subject, message, chat_id_override=None):
         """Sendet eine Telegram-Nachricht."""
-        if not self.chat_ids:
+        # Bei Override nur an die spezifische Chat-ID senden
+        if chat_id_override:
+            target_ids = [str(chat_id_override)]
+        else:
+            target_ids = self.chat_ids
+
+        if not target_ids:
             logger.warning("Keine Telegram Chat-ID konfiguriert")
             return
 
         # Telegram-formatierte Nachricht
         telegram_text = f"*{subject}*\n\n{message}"
 
-        for chat_id in self.chat_ids:
+        for chat_id in target_ids:
             try:
                 resp = requests.post(
                     f"{self.api_url}/sendMessage",

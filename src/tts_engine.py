@@ -263,20 +263,20 @@ class TTSEngine:
 
             # Tage als Ordinalzahlen
             day_words = {
-                1: "erster", 2: "zweiter", 3: "dritter", 4: "vierter", 5: "fuenfter",
+                1: "erster", 2: "zweiter", 3: "dritter", 4: "vierter", 5: "fünfter",
                 6: "sechster", 7: "siebter", 8: "achter", 9: "neunter", 10: "zehnter",
-                11: "elfter", 12: "zwoelfter", 13: "dreizehnter", 14: "vierzehnter",
-                15: "fuenfzehnter", 16: "sechzehnter", 17: "siebzehnter", 18: "achtzehnter",
+                11: "elfter", 12: "zwölfter", 13: "dreizehnter", 14: "vierzehnter",
+                15: "fünfzehnter", 16: "sechzehnter", 17: "siebzehnter", 18: "achtzehnter",
                 19: "neunzehnter", 20: "zwanzigster", 21: "einundzwanzigster",
                 22: "zweiundzwanzigster", 23: "dreiundzwanzigster", 24: "vierundzwanzigster",
-                25: "fuenfundzwanzigster", 26: "sechsundzwanzigster", 27: "siebenundzwanzigster",
-                28: "achtundzwanzigster", 29: "neunundzwanzigster", 30: "dreissigster",
-                31: "einunddreissigster"
+                25: "fünfundzwanzigster", 26: "sechsundzwanzigster", 27: "siebenundzwanzigster",
+                28: "achtundzwanzigster", 29: "neunundzwanzigster", 30: "dreißigster",
+                31: "einunddreißigster"
             }
 
             # Monate
             month_words = {
-                1: "Januar", 2: "Februar", 3: "Maerz", 4: "April", 5: "Mai", 6: "Juni",
+                1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
                 7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember"
             }
 
@@ -299,9 +299,9 @@ class TTSEngine:
             minute = match.group(2)
 
             hour_words = {
-                0: "null", 1: "ein", 2: "zwei", 3: "drei", 4: "vier", 5: "fuenf",
+                0: "null", 1: "ein", 2: "zwei", 3: "drei", 4: "vier", 5: "fünf",
                 6: "sechs", 7: "sieben", 8: "acht", 9: "neun", 10: "zehn",
-                11: "elf", 12: "zwoelf", 13: "dreizehn", 14: "vierzehn", 15: "fuenfzehn",
+                11: "elf", 12: "zwölf", 13: "dreizehn", 14: "vierzehn", 15: "fünfzehn",
                 16: "sechzehn", 17: "siebzehn", 18: "achtzehn", 19: "neunzehn",
                 20: "zwanzig", 21: "einundzwanzig", 22: "zweiundzwanzig", 23: "dreiundzwanzig"
             }
@@ -322,9 +322,9 @@ class TTSEngine:
         def time_only_hour(match):
             hour = int(match.group(1))
             hour_words = {
-                0: "null", 1: "ein", 2: "zwei", 3: "drei", 4: "vier", 5: "fuenf",
+                0: "null", 1: "ein", 2: "zwei", 3: "drei", 4: "vier", 5: "fünf",
                 6: "sechs", 7: "sieben", 8: "acht", 9: "neun", 10: "zehn",
-                11: "elf", 12: "zwoelf", 13: "dreizehn", 14: "vierzehn", 15: "fuenfzehn",
+                11: "elf", 12: "zwölf", 13: "dreizehn", 14: "vierzehn", 15: "fünfzehn",
                 16: "sechzehn", 17: "siebzehn", 18: "achtzehn", 19: "neunzehn",
                 20: "zwanzig", 21: "einundzwanzig", 22: "zweiundzwanzig", 23: "dreiundzwanzig"
             }
@@ -346,9 +346,9 @@ class TTSEngine:
             "u.a.": "unter anderem",
             "u. a.": "unter anderem",
             "ca.": "circa",
-            "bzgl.": "bezueglich",
+            "bzgl.": "bezüglich",
             "inkl.": "inklusive",
-            "zzgl.": "zuzueglich",
+            "zzgl.": "zuzüglich",
             "MwSt.": "Mehrwertsteuer",
             "Tel.": "Telefon",
             "Nr.": "Nummer",
@@ -416,15 +416,15 @@ class ElevenLabsTTSEngine:
                     "text": text,
                     "model_id": self.model_id,
                     "voice_settings": {
-                        "stability": 0.35,  # Niedriger = natuerlichere Aussprache (gut fuer Namen)
-                        "similarity_boost": 0.80,
-                        "style": 0.15,  # Etwas expressiver
+                        "stability": 0.50,  # Professionell und konsistent fuer Telefon
+                        "similarity_boost": 0.75,
+                        "style": 0.05,  # Minimal - natuerlich aber nicht uebertrieben
                         "use_speaker_boost": True,
                     },
                     "output_format": "mp3_22050_32",
                 },
                 stream=True,
-                timeout=15,
+                timeout=5,
             )
 
             if resp.status_code != 200:

@@ -17,12 +17,15 @@ import time
 import logging
 import tempfile
 import subprocess
+import random
+import hashlib
+from datetime import datetime
 from pathlib import Path
 
 # Pfad zum Projekt hinzufügen
 sys.path.insert(0, "/opt/ki-telefonassistent")
 
-from src.config_loader import load_config, load_business_config, build_system_prompt
+from src.config_loader import load_config, load_business_config, load_business_by_did, build_system_prompt
 from src.stt_engine import init_stt, transcribe
 from src.llm_engine import create_llm_engine
 from src.tts_engine import TTSEngine, create_tts_engine
@@ -42,6 +45,7 @@ from src.booking_database import (
 )
 from src.address_validator import validate_address, validate_address_with_retry, format_address_for_speech
 from src.customer_notifications import get_customer_notifier
+from src.push_notifications import send_push_to_business
 
 # Logging einrichten
 logging.basicConfig(
@@ -142,19 +146,32 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
         "Wie kann ich Ihnen helfen?"
     )
 
-    # Begrüßung mit der konfigurierten TTS-Engine erzeugen (einheitliche Stimme!)
-    logger.info("Erzeuge Begrüßung mit TTS...")
-    greeting_audio = audio_dir / f"{call_id}_greeting"
-    greeting_wav = str(greeting_audio) + ".wav"
-    audio_file = tts.synthesize_to_asterisk_format(greeting, greeting_wav)
-    if audio_file:
-        result = agi.stream_file(str(greeting_audio))
+    # Begrüßung: Cache nutzen wenn vorhanden (spart 2+ Sekunden!)
+    greeting_cache_dir = Path("/opt/ki-telefonassistent/audio/greeting_cache")
+    greeting_cache_dir.mkdir(parents=True, exist_ok=True)
+    greeting_hash = hashlib.md5(greeting.encode()).hexdigest()[:12]
+    cached_greeting = greeting_cache_dir / f"greeting_{greeting_hash}"
+    cached_greeting_wav = str(cached_greeting) + ".wav"
+
+    if Path(cached_greeting_wav).exists() and Path(cached_greeting_wav).stat().st_size > 1000:
+        # Cache-Hit: Begrüßung sofort abspielen!
+        logger.info(f"Greeting-Cache HIT: {cached_greeting_wav}")
+        result = agi.stream_file(str(cached_greeting))
         logger.info(f"stream_file Result: {result}")
         save_message(call_id, "assistant", greeting)
         conversation.append({"role": "assistant", "content": greeting})
     else:
-        logger.error("Begrüßung konnte nicht erzeugt werden")
-        return
+        # Cache-Miss: Generieren und cachen
+        logger.info("Greeting-Cache MISS - erzeuge Begrüßung mit TTS...")
+        audio_file = tts.synthesize_to_asterisk_format(greeting, cached_greeting_wav)
+        if audio_file:
+            result = agi.stream_file(str(cached_greeting))
+            logger.info(f"stream_file Result: {result}")
+            save_message(call_id, "assistant", greeting)
+            conversation.append({"role": "assistant", "content": greeting})
+        else:
+            logger.error("Begrüßung konnte nicht erzeugt werden")
+            return
 
     # STT erst NACH der Begruessung laden (dauert ~3s, Anrufer hoert inzwischen die Begruessung)
     logger.info("Lade Whisper STT...")
@@ -169,6 +186,7 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
     llm = create_llm_engine(config)
 
     # Gesprächsschleife
+    silence_count = 0  # Zaehler fuer aufeinanderfolgende Stille-Runden
     for turn in range(max_turns):
         logger.info(f"Gesprächsrunde {turn + 1}/{max_turns}")
 
@@ -190,19 +208,25 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
         # Prüfe ob die Aufnahme Audio enthält
         file_size = record_wav.stat().st_size
         if file_size < 1000:  # Sehr kleine Datei = wahrscheinlich Stille
-            logger.info("Leere Aufnahme - Anrufer schweigt oder hat aufgelegt")
-            # Nachfragen
-            if turn > 0:
+            silence_count += 1
+            logger.info(f"Leere Aufnahme ({silence_count}x) - Anrufer schweigt oder hat aufgelegt")
+            if silence_count >= 3:
+                logger.info("3x Stille hintereinander - Anruf wird beendet")
                 break
-            else:
-                followup = "Hallo? Sind Sie noch dran? Wie kann ich Ihnen helfen?"
-                followup_audio = audio_dir / f"{call_id}_followup{turn}"
-                audio_file = tts.synthesize_to_asterisk_format(
-                    followup, str(followup_audio) + ".wav"
-                )
-                if audio_file:
-                    agi.stream_file(str(followup_audio))
-                continue
+            # Variierende Nachfrage-Texte
+            silence_prompts = [
+                "Hallo? Sind Sie noch dran?",
+                "Ich bin noch hier. Kann ich Ihnen weiterhelfen?",
+                "Falls Sie noch da sind, wie kann ich Ihnen helfen?",
+            ]
+            followup = silence_prompts[min(silence_count - 1, len(silence_prompts) - 1)]
+            followup_audio = audio_dir / f"{call_id}_followup{turn}"
+            audio_file = tts.synthesize_to_asterisk_format(
+                followup, str(followup_audio) + ".wav"
+            )
+            if audio_file:
+                agi.stream_file(str(followup_audio))
+            continue
 
         # Wartemusik SOFORT starten (waehrend STT + LLM + TTS arbeiten)
         agi.set_music(on=True, music_class="default")
@@ -213,8 +237,30 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
         user_text = stt_result["text"].strip()
 
         if not user_text:
-            logger.info("Kein Text erkannt")
+            silence_count += 1
+            logger.info(f"Kein Text erkannt ({silence_count}x)")
+            if silence_count >= 3:
+                logger.info("3x kein Text erkannt - Anruf wird beendet")
+                agi.set_music(on=False)
+                break
+            # Variierende Nachfrage-Texte
+            agi.set_music(on=False)
+            stt_retry_prompts = [
+                "Entschuldigung, ich habe Sie leider nicht verstanden. Könnten Sie das bitte wiederholen?",
+                "Ich konnte Sie leider nicht verstehen. Bitte sprechen Sie etwas deutlicher.",
+                "Leider habe ich nichts verstanden. Möchten Sie es nochmal versuchen?",
+            ]
+            followup = stt_retry_prompts[min(silence_count - 1, len(stt_retry_prompts) - 1)]
+            followup_audio = audio_dir / f"{call_id}_followup{turn}"
+            audio_file = tts.synthesize_to_asterisk_format(
+                followup, str(followup_audio) + ".wav"
+            )
+            if audio_file:
+                agi.stream_file(str(followup_audio))
             continue
+
+        # Text erkannt - Stille-Zaehler zuruecksetzen
+        silence_count = 0
 
         logger.info(f"Anrufer sagt: {user_text}")
         save_message(call_id, "user", user_text)
@@ -222,12 +268,21 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
 
         # Prüfe ob Anrufer auflegen will
         goodbye_phrases = [
-            "tschüss", "auf wiedersehen", "danke tschüss",
-            "bye", "wiederhören", "das war's", "das wars",
+            "tschüss", "tschüs", "tschau", "ciao",
+            "auf wiedersehen", "auf wiederhören", "auf wiederschauen",
+            "danke tschüss", "danke schön tschüss",
+            "bye", "wiederhören", "wiederschauen",
+            "das war's", "das wars", "das wärs",
             "ich leg auf", "ich lege auf",
         ]
         if any(phrase in user_text.lower() for phrase in goodbye_phrases):
-            farewell = "Auf Wiederhören! Ich wünsche Ihnen einen schönen Tag."
+            hour = datetime.now().hour
+            if hour < 11:
+                farewell = "Auf Wiederhören! Ich wünsche Ihnen einen schönen Vormittag."
+            elif hour < 17:
+                farewell = "Auf Wiederhören! Ich wünsche Ihnen einen schönen Tag."
+            else:
+                farewell = "Auf Wiederhören! Ich wünsche Ihnen einen schönen Abend."
             farewell_audio = audio_dir / f"{call_id}_farewell"
             audio_file = tts.synthesize_to_asterisk_format(
                 farewell, str(farewell_audio) + ".wav"
@@ -249,7 +304,12 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
         # Prüfe ob KI das Gespräch beendet hat
         ki_goodbye_phrases = [
             "auf wiederhören", "auf wiederhoeren", "wiederhören",
-            "wiederhoeren", "einen schönen tag", "schoenen tag",
+            "wiederhoeren", "auf wiedersehen", "wiedersehen",
+            "auf wiederschauen", "wiederschauen",
+            "einen schönen tag", "schoenen tag",
+            "reservierung ist notiert", "ist notiert",
+            "bestätigung per sms", "bestaetigung per sms",
+            "anfrage ist notiert", "wir melden uns",
         ]
         ki_ends_call = any(phrase in response_text.lower() for phrase in ki_goodbye_phrases)
 
@@ -349,6 +409,15 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
                     except Exception as sms_err:
                         logger.warning(f"SMS-Bestaetigung fehlgeschlagen: {sms_err}")
 
+                    # Push-Benachrichtigung ans Dashboard
+                    try:
+                        push_body = f"{customer_name}: Terminwunsch"
+                        if booking_data.get("requested_date"):
+                            push_body += f" am {booking_data['requested_date']}"
+                        send_push_to_business(booking_business_id, "Neuer Terminwunsch", push_body[:120])
+                    except Exception as push_err:
+                        logger.warning(f"Push-Benachrichtigung fehlgeschlagen: {push_err}")
+
                 else:
                     # IVR-Kategorie als Fallback verwenden
                     ivr_kat = config.get("ivr_kategorie")
@@ -392,6 +461,15 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
                             )
                     except Exception as sms_err:
                         logger.warning(f"SMS-Bestaetigung fehlgeschlagen: {sms_err}")
+
+                    # Push-Benachrichtigung ans Dashboard
+                    try:
+                        urg = booking_data.get("urgency", "normal")
+                        push_title = "Neuer Anruf" if urg == "normal" else "Dringender Anruf!"
+                        push_body = f"{customer_name}: {booking_data.get('description') or booking_data.get('concern') or 'Neuer Anruf'}"
+                        send_push_to_business(booking_business_id, push_title, push_body[:120])
+                    except Exception as push_err:
+                        logger.warning(f"Push-Benachrichtigung fehlgeschlagen: {push_err}")
             else:
                 logger.info(
                     "Kein Termin-/Auftragswunsch erkannt - "
@@ -402,7 +480,7 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
     else:
         logger.debug("Kein BOOKING_BUSINESS_ID konfiguriert - Booking uebersprungen")
 
-    # --- Benachrichtigung senden ---
+    # --- Benachrichtigung senden (mit Booking-Daten falls vorhanden) ---
     try:
         notifier = NotificationManager(config)
         call_data = {
@@ -410,6 +488,14 @@ def run_conversation(agi, call_id, caller_number, config, business_config):
             "caller_number": caller_number,
             "duration_seconds": len(conversation) * 15,  # Grobe Schätzung
         }
+        # Booking-Daten hinzufuegen (Adresse, Service, Kategorie)
+        if booking_business_id:
+            try:
+                call_data["customer_address"] = booking_data.get("customer_address")
+                call_data["service_name"] = booking_data.get("service_name")
+                call_data["category"] = booking_data.get("category")
+            except NameError:
+                pass  # booking_data nicht verfuegbar
         notifier.notify_new_call(caller_info, call_data)
     except Exception as e:
         logger.warning(f"Benachrichtigung fehlgeschlagen: {e}")
@@ -445,7 +531,22 @@ def main():
 
         # Konfiguration laden
         config = load_config()
-        business_config = load_business_config()
+
+        # Multi-Tenant: DID-basiertes Routing
+        did = agi.get_variable('DID_NUMBER') or ''
+        if did:
+            business_config, route_info = load_business_by_did(did)
+            # Route-spezifische Overrides uebernehmen
+            if route_info.get('telegram_chat_id'):
+                config['telegram_chat_id'] = route_info['telegram_chat_id']
+            if route_info.get('booking_business_id'):
+                config['booking_business_id'] = route_info['booking_business_id']
+            # active_business aus DID-Routing uebernehmen
+            config['active_business'] = route_info.get('business', config['active_business'])
+            logger.info(f"DID-Routing: {did} -> {business_config.get('company_name', '?')} (Business-ID: {config.get('booking_business_id')})")
+        else:
+            business_config = load_business_config()
+            route_info = {}
 
         # Kategorie-spezifische Anpassungen
         if kategorie:
